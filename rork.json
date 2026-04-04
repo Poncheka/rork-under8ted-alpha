@@ -1,0 +1,10 @@
+{
+  "$schema": "https://rork.com/schema/rork.json",
+  "apps": [
+    {
+      "name": "Under8ted",
+      "path": "expo",
+      "framework": "react-native"
+    }
+  ]
+}
