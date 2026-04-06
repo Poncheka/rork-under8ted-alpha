@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "rork-app",
+    "scheme": "under8ted",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "splash": {
@@ -15,14 +15,14 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "app.rork.n594jhm18vrn9up2g6fqq"
+      "bundleIdentifier": "com.under8ted.alpha"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#050508"
       },
-      "package": "app.rork.n594jhm18vrn9up2g6fqq"
+      "package": "com.under8ted.alpha"
     },
     "web": {
       "favicon": "./assets/images/favicon.png"
