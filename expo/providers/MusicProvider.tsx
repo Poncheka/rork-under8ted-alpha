@@ -3,16 +3,37 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import createContextHook from '@nkzw/create-context-hook';
 import { Track, Station, StationHistory, Feedback } from '@/constants/types';
-import { getTracksForArtist, STAFF_PICKS } from '@/constants/mock-data';
+import { STAFF_PICKS } from '@/constants/mock-data';
+import { generateStation } from '@/lib/spotify';
 
 const LIKED_KEY = '@under8ted_liked';
 const HISTORY_KEY = '@under8ted_history';
 const FEEDBACK_KEY = '@under8ted_feedback';
+const SPOTIFY_TOKEN_KEY = '@under8ted_spotify_token';
 
 export const [MusicProvider, useMusic] = createContextHook(() => {
   const [station, setStation] = useState<Station | null>(null);
   const [isStationLoading, setIsStationLoading] = useState<boolean>(false);
+  const [spotifyToken, setSpotifyTokenState] = useState<string>('');
   const queryClient = useQueryClient();
+
+  useQuery({
+    queryKey: ['spotify-token-restore'],
+    queryFn: async () => {
+      const stored = await AsyncStorage.getItem(SPOTIFY_TOKEN_KEY);
+      if (stored) {
+        console.log('[Music] Restored Spotify token from storage');
+        setSpotifyTokenState(stored);
+      }
+      return stored ?? '';
+    },
+  });
+
+  const setSpotifyToken = useCallback(async (token: string) => {
+    console.log('[Music] Setting Spotify token');
+    setSpotifyTokenState(token);
+    await AsyncStorage.setItem(SPOTIFY_TOKEN_KEY, token);
+  }, []);
 
   const likedQuery = useQuery({
     queryKey: ['liked-songs'],
@@ -74,18 +95,25 @@ export const [MusicProvider, useMusic] = createContextHook(() => {
     },
   });
 
-  const startStation = useCallback(async (artistName: string) => {
-    console.log('[Music] Starting station for:', artistName);
+  const startStation = useCallback(async (artistName: string, artistId?: string) => {
+    console.log('[Music] Starting station for:', artistName, 'id:', artistId);
     setIsStationLoading(true);
 
-    await new Promise(resolve => setTimeout(resolve, 800 + Math.random() * 700));
+    let tracks: Track[] = [];
 
-    const tracks = getTracksForArtist(artistName);
-    const shuffled = [...tracks].sort(() => Math.random() - 0.5);
+    if (spotifyToken && artistId) {
+      tracks = await generateStation(artistId, artistName, spotifyToken);
+    }
+
+    if (tracks.length === 0) {
+      console.log('[Music] No tracks from Spotify, using fallback empty state');
+      setIsStationLoading(false);
+      return false;
+    }
 
     const newStation: Station = {
       seed_artist_name: artistName,
-      tracks: shuffled,
+      tracks,
       currentIndex: 0,
     };
     setStation(newStation);
@@ -107,7 +135,9 @@ export const [MusicProvider, useMusic] = createContextHook(() => {
     }
     await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
     queryClient.setQueryData(['station-history'], updated);
-  }, [historyQuery.data, queryClient]);
+
+    return true;
+  }, [historyQuery.data, queryClient, spotifyToken]);
 
   const skipTrack = useCallback(() => {
     if (!station) return;
@@ -146,9 +176,12 @@ export const [MusicProvider, useMusic] = createContextHook(() => {
     likeTrack: likeMutation.mutate,
     isLiked,
     closeStation,
+    spotifyToken,
+    setSpotifyToken,
   }), [
     station, currentTrack, isStationLoading, likedQuery.data,
     historyQuery.data, staffPicks, startStation, skipTrack,
     feedbackMutation.mutate, likeMutation.mutate, closeStation, isLiked,
+    spotifyToken, setSpotifyToken,
   ]);
 });

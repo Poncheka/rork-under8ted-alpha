@@ -9,14 +9,17 @@ import {
   Animated,
   Dimensions,
   Platform,
+  ActivityIndicator,
+  Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Search, Zap, Clock, ChevronRight, Disc3 } from 'lucide-react-native';
+import { Search, Zap, Clock, ChevronRight, Disc3, X, AlertCircle } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { colors, spacing, radius } from '@/constants/theme';
 import { useAuth } from '@/providers/AuthProvider';
 import { useMusic } from '@/providers/MusicProvider';
+import { searchArtists, SpotifyArtist } from '@/lib/spotify';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -24,10 +27,14 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { profile } = useAuth();
-  const { staffPicks, recentStations, likedSongs } = useMusic();
+  const { staffPicks, recentStations, likedSongs, spotifyToken } = useMusic();
   const [searchText, setSearchText] = useState<string>('');
+  const [searchResults, setSearchResults] = useState<SpotifyArtist[]>([]);
+  const [isSearching, setIsSearching] = useState<boolean>(false);
+  const [showResults, setShowResults] = useState<boolean>(false);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     Animated.timing(fadeAnim, {
@@ -37,13 +44,63 @@ export default function HomeScreen() {
     }).start();
   }, [fadeAnim]);
 
+  const performSearch = useCallback(async (query: string) => {
+    if (!query.trim()) {
+      setSearchResults([]);
+      setShowResults(false);
+      setIsSearching(false);
+      return;
+    }
+    if (!spotifyToken) {
+      setIsSearching(false);
+      setShowResults(true);
+      setSearchResults([]);
+      return;
+    }
+    setIsSearching(true);
+    setShowResults(true);
+    console.log('[Home] Searching artists:', query);
+    const results = await searchArtists(query, spotifyToken);
+    console.log('[Home] Search results:', results.length);
+    setSearchResults(results);
+    setIsSearching(false);
+  }, [spotifyToken]);
+
+  const handleSearchChange = useCallback((text: string) => {
+    setSearchText(text);
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+    }
+    if (!text.trim()) {
+      setSearchResults([]);
+      setShowResults(false);
+      return;
+    }
+    debounceRef.current = setTimeout(() => {
+      void performSearch(text);
+    }, 300);
+  }, [performSearch]);
+
+  const handleArtistSelect = useCallback((artist: SpotifyArtist) => {
+    if (Platform.OS !== 'web') {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+    setShowResults(false);
+    setSearchText('');
+    router.push({ pathname: '/artist', params: { name: artist.name, artistId: artist.id, imageUrl: artist.images?.[0]?.url ?? '' } });
+  }, [router]);
+
   const handleSearch = useCallback(() => {
     if (!searchText.trim()) return;
     if (Platform.OS !== 'web') {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
-    router.push({ pathname: '/artist', params: { name: searchText.trim() } });
-  }, [searchText, router]);
+    if (searchResults.length > 0) {
+      handleArtistSelect(searchResults[0]);
+    } else {
+      router.push({ pathname: '/artist', params: { name: searchText.trim() } });
+    }
+  }, [searchText, searchResults, handleArtistSelect, router]);
 
   const handleStaffPick = useCallback((artistName: string) => {
     if (Platform.OS !== 'web') {
@@ -66,6 +123,12 @@ export default function HomeScreen() {
     router.push({ pathname: '/artist', params: { name: artistName } });
   }, [router]);
 
+  const clearSearch = useCallback(() => {
+    setSearchText('');
+    setSearchResults([]);
+    setShowResults(false);
+  }, []);
+
   useEffect(() => {
     const pulse = Animated.loop(
       Animated.sequence([
@@ -76,6 +139,8 @@ export default function HomeScreen() {
     pulse.start();
     return () => pulse.stop();
   }, [pulseAnim]);
+
+  const hasToken = spotifyToken.length > 0;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -100,6 +165,15 @@ export default function HomeScreen() {
             <Text style={styles.heroSub}>AI-curated underrated songs only</Text>
           </View>
 
+          {!hasToken && (
+            <View style={styles.tokenBanner}>
+              <AlertCircle size={16} color={colors.acidYellow} />
+              <Text style={styles.tokenBannerText}>
+                Connect Spotify to discover music. Set your token in settings.
+              </Text>
+            </View>
+          )}
+
           <View style={styles.searchContainer}>
             <View style={styles.searchBar}>
               <Search size={20} color={colors.textMuted} />
@@ -108,15 +182,20 @@ export default function HomeScreen() {
                 placeholder="Search an artist..."
                 placeholderTextColor={colors.textMuted}
                 value={searchText}
-                onChangeText={setSearchText}
+                onChangeText={handleSearchChange}
                 onSubmitEditing={handleSearch}
                 returnKeyType="search"
                 autoCapitalize="none"
                 autoCorrect={false}
                 testID="artist-search-input"
               />
+              {searchText.length > 0 && (
+                <TouchableOpacity onPress={clearSearch} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <X size={18} color={colors.textMuted} />
+                </TouchableOpacity>
+              )}
             </View>
-            {searchText.trim().length > 0 && (
+            {searchText.trim().length > 0 && !showResults && (
               <TouchableOpacity
                 style={styles.searchBtn}
                 onPress={handleSearch}
@@ -128,6 +207,59 @@ export default function HomeScreen() {
               </TouchableOpacity>
             )}
           </View>
+
+          {showResults && (
+            <View style={styles.resultsContainer}>
+              {isSearching && (
+                <View style={styles.searchingRow}>
+                  <ActivityIndicator size="small" color={colors.electricViolet} />
+                  <Text style={styles.searchingText}>Searching...</Text>
+                </View>
+              )}
+              {!isSearching && !hasToken && searchText.trim().length > 0 && (
+                <View style={styles.noTokenRow}>
+                  <Text style={styles.noTokenText}>
+                    Connect Spotify to search artists
+                  </Text>
+                </View>
+              )}
+              {!isSearching && hasToken && searchResults.length === 0 && searchText.trim().length > 0 && (
+                <View style={styles.noResultsRow}>
+                  <Text style={styles.noResultsText}>No artists found</Text>
+                </View>
+              )}
+              {searchResults.map((artist) => (
+                <TouchableOpacity
+                  key={artist.id}
+                  style={styles.resultRow}
+                  onPress={() => handleArtistSelect(artist)}
+                  activeOpacity={0.75}
+                >
+                  {artist.images?.[0]?.url ? (
+                    <Image
+                      source={{ uri: artist.images[0].url }}
+                      style={styles.resultImage}
+                    />
+                  ) : (
+                    <View style={styles.resultImagePlaceholder}>
+                      <Text style={styles.resultImageText}>
+                        {artist.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+                  <View style={styles.resultInfo}>
+                    <Text style={styles.resultName} numberOfLines={1}>{artist.name}</Text>
+                    {artist.genres?.length > 0 && (
+                      <Text style={styles.resultGenre} numberOfLines={1}>
+                        {artist.genres.slice(0, 2).join(' · ')}
+                      </Text>
+                    )}
+                  </View>
+                  <ChevronRight size={16} color={colors.textMuted} />
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
 
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
@@ -292,11 +424,29 @@ const styles = StyleSheet.create({
     fontWeight: '500' as const,
     letterSpacing: 0.5,
   },
+  tokenBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.acidYellow + '10',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.acidYellow + '20',
+  },
+  tokenBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: colors.acidYellow,
+    fontWeight: '500' as const,
+    lineHeight: 18,
+  },
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    marginBottom: spacing.xl,
+    marginBottom: spacing.sm,
   },
   searchBar: {
     flex: 1,
@@ -331,6 +481,86 @@ const styles = StyleSheet.create({
     fontWeight: '900' as const,
     color: colors.bg,
     letterSpacing: 1,
+  },
+  resultsContainer: {
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    marginBottom: spacing.xl,
+    overflow: 'hidden',
+  },
+  searchingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.lg,
+    justifyContent: 'center',
+  },
+  searchingText: {
+    fontSize: 14,
+    color: colors.textSecondary,
+    fontWeight: '500' as const,
+  },
+  noTokenRow: {
+    padding: spacing.lg,
+    alignItems: 'center',
+  },
+  noTokenText: {
+    fontSize: 14,
+    color: colors.textMuted,
+    fontWeight: '500' as const,
+    textAlign: 'center',
+  },
+  noResultsRow: {
+    padding: spacing.lg,
+    alignItems: 'center',
+  },
+  noResultsText: {
+    fontSize: 14,
+    color: colors.textMuted,
+    fontWeight: '500' as const,
+  },
+  resultRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm + 4,
+    gap: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.surfaceBorder + '50',
+  },
+  resultImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.surface,
+  },
+  resultImagePlaceholder: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.electricViolet + '20',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  resultImageText: {
+    fontSize: 14,
+    fontWeight: '800' as const,
+    color: colors.electricViolet,
+  },
+  resultInfo: {
+    flex: 1,
+  },
+  resultName: {
+    fontSize: 16,
+    fontWeight: '700' as const,
+    color: colors.textPrimary,
+  },
+  resultGenre: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 2,
   },
   section: {
     marginBottom: spacing.xl,

@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -6,25 +6,49 @@ import {
   TouchableOpacity,
   Animated,
   Platform,
+  Image,
+  ActivityIndicator,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Zap, Radio, Disc3 } from 'lucide-react-native';
+import { ArrowLeft, Zap, Radio, Disc3, AlertCircle, Search } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { colors, spacing, radius } from '@/constants/theme';
 import { useMusic } from '@/providers/MusicProvider';
-import { getTracksForArtist } from '@/constants/mock-data';
+import { searchArtists } from '@/lib/spotify';
 
 export default function ArtistScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { name } = useLocalSearchParams<{ name: string }>();
-  const { startStation, isStationLoading } = useMusic();
+  const { name, artistId: paramArtistId, imageUrl } = useLocalSearchParams<{ name: string; artistId?: string; imageUrl?: string }>();
+  const { startStation, isStationLoading, spotifyToken } = useMusic();
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.95)).current;
+  const [resolvedArtistId, setResolvedArtistId] = useState<string>(paramArtistId ?? '');
+  const [resolvedImage, setResolvedImage] = useState<string>(imageUrl ?? '');
+  const [isResolving, setIsResolving] = useState<boolean>(false);
+  const [stationError, setStationError] = useState<string>('');
 
   const artistName = name || 'Unknown Artist';
-  const tracks = getTracksForArtist(artistName);
+  const hasToken = spotifyToken.length > 0;
+
+  useEffect(() => {
+    if (!paramArtistId && hasToken && artistName !== 'Unknown Artist') {
+      setIsResolving(true);
+      console.log('[Artist] Resolving artist ID for:', artistName);
+      searchArtists(artistName, spotifyToken).then(results => {
+        if (results.length > 0) {
+          const match = results.find(a => a.name.toLowerCase() === artistName.toLowerCase()) ?? results[0];
+          console.log('[Artist] Resolved to:', match.name, match.id);
+          setResolvedArtistId(match.id);
+          if (match.images?.[0]?.url) {
+            setResolvedImage(match.images[0].url);
+          }
+        }
+        setIsResolving(false);
+      }).catch(() => setIsResolving(false));
+    }
+  }, [paramArtistId, hasToken, artistName, spotifyToken]);
 
   useEffect(() => {
     Animated.parallel([
@@ -37,9 +61,25 @@ export default function ArtistScreen() {
     if (Platform.OS !== 'web') {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     }
-    await startStation(artistName);
-    router.push('/station');
-  }, [artistName, startStation, router]);
+    setStationError('');
+
+    if (!hasToken) {
+      setStationError('Connect Spotify to start a station. Set your token in settings.');
+      return;
+    }
+
+    if (!resolvedArtistId) {
+      setStationError('Could not find this artist on Spotify. Try searching from the home screen.');
+      return;
+    }
+
+    const success = await startStation(artistName, resolvedArtistId);
+    if (success) {
+      router.push('/station');
+    } else {
+      setStationError('No deep cuts found for this artist. Try another one.');
+    }
+  }, [artistName, resolvedArtistId, startStation, router, hasToken]);
 
   const initials = artistName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
 
@@ -60,21 +100,41 @@ export default function ArtistScreen() {
         ]}
       >
         <View style={styles.artistCard}>
-          <View style={styles.avatarShape}>
-            <Text style={styles.avatarText}>{initials}</Text>
-          </View>
+          {resolvedImage ? (
+            <Image source={{ uri: resolvedImage }} style={styles.artistImage} />
+          ) : (
+            <View style={styles.avatarShape}>
+              <Text style={styles.avatarText}>{initials}</Text>
+            </View>
+          )}
 
           <Text style={styles.artistName}>{artistName}</Text>
 
           <View style={styles.metaRow}>
-            <View style={styles.metaChip}>
-              <Disc3 size={12} color={colors.electricViolet} />
-              <Text style={styles.metaText}>{tracks.length} deep cuts found</Text>
-            </View>
-            <View style={styles.metaChip}>
-              <Radio size={12} color={colors.icyBlue} />
-              <Text style={styles.metaText}>AI curated</Text>
-            </View>
+            {isResolving ? (
+              <View style={styles.metaChip}>
+                <ActivityIndicator size={12} color={colors.electricViolet} />
+                <Text style={styles.metaText}>Looking up artist...</Text>
+              </View>
+            ) : resolvedArtistId ? (
+              <>
+                <View style={styles.metaChip}>
+                  <Disc3 size={12} color={colors.electricViolet} />
+                  <Text style={styles.metaText}>Spotify linked</Text>
+                </View>
+                <View style={styles.metaChip}>
+                  <Radio size={12} color={colors.icyBlue} />
+                  <Text style={styles.metaText}>AI curated</Text>
+                </View>
+              </>
+            ) : (
+              <View style={styles.metaChip}>
+                <Search size={12} color={colors.textMuted} />
+                <Text style={styles.metaText}>
+                  {hasToken ? 'Artist not found on Spotify' : 'Spotify not connected'}
+                </Text>
+              </View>
+            )}
           </View>
 
           <View style={styles.divider} />
@@ -82,29 +142,33 @@ export default function ArtistScreen() {
           <Text style={styles.description}>
             Under8ted will scan this artist's catalog and surface only the deep cuts — no obvious hits, no filler. Pure hidden gems.
           </Text>
-
-          <View style={styles.trackPreview}>
-            <Text style={styles.trackPreviewLabel}>SAMPLE TRACKS</Text>
-            {tracks.slice(0, 3).map((track, idx) => (
-              <View key={track.id} style={styles.trackPreviewRow}>
-                <Text style={styles.trackPreviewNum}>{String(idx + 1).padStart(2, '0')}</Text>
-                <Text style={styles.trackPreviewTitle} numberOfLines={1}>{track.title}</Text>
-                <Text style={styles.trackPreviewAlbum} numberOfLines={1}>{track.album_name}</Text>
-              </View>
-            ))}
-          </View>
         </View>
 
+        {stationError.length > 0 && (
+          <View style={styles.errorBanner}>
+            <AlertCircle size={16} color={colors.error} />
+            <Text style={styles.errorText}>{stationError}</Text>
+          </View>
+        )}
+
         <TouchableOpacity
-          style={[styles.startBtn, isStationLoading && styles.startBtnLoading]}
+          style={[
+            styles.startBtn,
+            (isStationLoading || isResolving) && styles.startBtnLoading,
+            (!hasToken || !resolvedArtistId) && !isResolving && styles.startBtnDisabled,
+          ]}
           onPress={handleStartStation}
-          disabled={isStationLoading}
+          disabled={isStationLoading || isResolving}
           activeOpacity={0.85}
           testID="start-station-btn"
         >
-          <Zap size={20} color={colors.bg} />
+          {isStationLoading ? (
+            <ActivityIndicator size={18} color={colors.bg} />
+          ) : (
+            <Zap size={20} color={colors.bg} />
+          )}
           <Text style={styles.startBtnText}>
-            {isStationLoading ? 'BUILDING STATION...' : 'START UNDER8TED STATION'}
+            {isStationLoading ? 'BUILDING STATION...' : isResolving ? 'LOOKING UP ARTIST...' : 'START UNDER8TED STATION'}
           </Text>
         </TouchableOpacity>
       </Animated.View>
@@ -139,6 +203,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.surfaceBorder,
   },
+  artistImage: {
+    width: 72,
+    height: 72,
+    borderRadius: 20,
+    marginBottom: spacing.lg,
+    backgroundColor: colors.surface,
+  },
   avatarShape: {
     width: 72,
     height: 72,
@@ -167,6 +238,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.sm,
     marginBottom: spacing.lg,
+    flexWrap: 'wrap',
   },
   metaChip: {
     flexDirection: 'row',
@@ -191,39 +263,24 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.textSecondary,
     lineHeight: 21,
-    marginBottom: spacing.lg,
   },
-  trackPreview: {
-    gap: spacing.sm,
-  },
-  trackPreviewLabel: {
-    fontSize: 10,
-    fontWeight: '800' as const,
-    color: colors.textMuted,
-    letterSpacing: 2,
-    marginBottom: spacing.xs,
-  },
-  trackPreviewRow: {
+  errorBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
+    backgroundColor: colors.error + '15',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginTop: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.error + '30',
   },
-  trackPreviewNum: {
-    fontSize: 12,
-    fontWeight: '700' as const,
-    color: colors.textMuted,
-    width: 20,
-  },
-  trackPreviewTitle: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: colors.textPrimary,
+  errorText: {
     flex: 1,
-  },
-  trackPreviewAlbum: {
-    fontSize: 12,
-    color: colors.textMuted,
-    maxWidth: 100,
+    fontSize: 13,
+    color: colors.error,
+    fontWeight: '500' as const,
+    lineHeight: 18,
   },
   startBtn: {
     backgroundColor: colors.acidYellow,
@@ -237,6 +294,9 @@ const styles = StyleSheet.create({
   },
   startBtnLoading: {
     opacity: 0.6,
+  },
+  startBtnDisabled: {
+    opacity: 0.4,
   },
   startBtnText: {
     fontSize: 15,
