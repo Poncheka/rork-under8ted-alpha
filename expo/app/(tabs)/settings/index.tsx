@@ -10,14 +10,16 @@ import {
   Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Settings, User, LogOut, Trash2, Check, Edit2 } from 'lucide-react-native';
+import { Settings, User, LogOut, Trash2, Check, Edit2, Music, Unplug, RefreshCw } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { colors, spacing, radius } from '@/constants/theme';
 import { useAuth } from '@/providers/AuthProvider';
+import { useMusic } from '@/providers/MusicProvider';
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { profile, updateUsername, logout, deleteAccount } = useAuth();
+  const { spotifyToken, connectSpotify, disconnectSpotify, isConnecting, isTokenExpired } = useMusic();
   const [isEditing, setIsEditing] = useState<boolean>(false);
   const [newUsername, setNewUsername] = useState<string>(profile?.username ?? '');
 
@@ -128,6 +130,57 @@ export default function SettingsScreen() {
             )}
             <Text style={styles.profileEmail}>{profile?.email}</Text>
           </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>SPOTIFY</Text>
+
+          {spotifyToken ? (
+            <>
+              <View style={styles.spotifyConnected}>
+                <Music size={20} color={colors.acidYellow} />
+                <View style={styles.spotifyInfo}>
+                  <Text style={styles.spotifyStatusText}>Connected to Spotify</Text>
+                  {isTokenExpired && (
+                    <Text style={styles.spotifyExpiredText}>Token expired</Text>
+                  )}
+                </View>
+              </View>
+              {isTokenExpired && (
+                <TouchableOpacity
+                  style={styles.settingRow}
+                  onPress={() => void connectSpotify()}
+                  activeOpacity={0.8}
+                  disabled={isConnecting}
+                >
+                  <RefreshCw size={20} color={colors.icyBlue} />
+                  <Text style={styles.settingText}>
+                    {isConnecting ? 'Reconnecting...' : 'Reconnect Spotify'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={styles.settingRow}
+                onPress={() => void disconnectSpotify()}
+                activeOpacity={0.8}
+              >
+                <Unplug size={20} color={colors.textSecondary} />
+                <Text style={styles.settingText}>Disconnect Spotify</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <TouchableOpacity
+              style={styles.spotifyConnectBtn}
+              onPress={() => void connectSpotify()}
+              activeOpacity={0.8}
+              disabled={isConnecting}
+            >
+              <Music size={20} color={colors.bg} />
+              <Text style={styles.spotifyConnectText}>
+                {isConnecting ? 'Connecting...' : 'Connect Spotify'}
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         <View style={styles.section}>
@@ -319,5 +372,42 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontStyle: 'italic',
     marginTop: spacing.sm,
+  },
+  spotifyConnected: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: colors.acidYellow + '10',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.acidYellow + '20',
+  },
+  spotifyInfo: {
+    flex: 1,
+  },
+  spotifyStatusText: {
+    fontSize: 15,
+    fontWeight: '600' as const,
+    color: colors.acidYellow,
+  },
+  spotifyExpiredText: {
+    fontSize: 12,
+    color: colors.error,
+    marginTop: 2,
+  },
+  spotifyConnectBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.acidYellow,
+    borderRadius: radius.md,
+    padding: spacing.md,
+  },
+  spotifyConnectText: {
+    fontSize: 16,
+    fontWeight: '700' as const,
+    color: colors.bg,
   },
 });

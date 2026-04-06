@@ -1,38 +1,128 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import createContextHook from '@nkzw/create-context-hook';
 import { Track, Station, StationHistory, Feedback } from '@/constants/types';
 import { STAFF_PICKS } from '@/constants/mock-data';
 import { generateStation } from '@/lib/spotify';
+import { spotifyLogin, spotifyRefreshToken, SpotifyTokenResult } from '@/lib/spotify-auth';
 
 const LIKED_KEY = '@under8ted_liked';
 const HISTORY_KEY = '@under8ted_history';
 const FEEDBACK_KEY = '@under8ted_feedback';
 const SPOTIFY_TOKEN_KEY = '@under8ted_spotify_token';
+const SPOTIFY_REFRESH_KEY = '@under8ted_spotify_refresh';
+const SPOTIFY_EXPIRES_KEY = '@under8ted_spotify_expires';
 
 export const [MusicProvider, useMusic] = createContextHook(() => {
   const [station, setStation] = useState<Station | null>(null);
   const [isStationLoading, setIsStationLoading] = useState<boolean>(false);
   const [spotifyToken, setSpotifyTokenState] = useState<string>('');
+  const [refreshTokenValue, setRefreshTokenValue] = useState<string>('');
+  const [tokenExpiresAt, setTokenExpiresAt] = useState<number>(0);
+  const [isConnecting, setIsConnecting] = useState<boolean>(false);
+  const refreshingRef = useRef<boolean>(false);
   const queryClient = useQueryClient();
 
   useQuery({
     queryKey: ['spotify-token-restore'],
     queryFn: async () => {
-      const stored = await AsyncStorage.getItem(SPOTIFY_TOKEN_KEY);
-      if (stored) {
-        console.log('[Music] Restored Spotify token from storage');
-        setSpotifyTokenState(stored);
+      try {
+        const [storedToken, storedRefresh, storedExpires] = await Promise.all([
+          AsyncStorage.getItem(SPOTIFY_TOKEN_KEY),
+          AsyncStorage.getItem(SPOTIFY_REFRESH_KEY),
+          AsyncStorage.getItem(SPOTIFY_EXPIRES_KEY),
+        ]);
+        if (storedToken) {
+          console.log('[Music] Restored Spotify token from storage');
+          setSpotifyTokenState(storedToken);
+        }
+        if (storedRefresh) {
+          setRefreshTokenValue(storedRefresh);
+        }
+        if (storedExpires) {
+          setTokenExpiresAt(parseInt(storedExpires, 10));
+        }
+        return storedToken ?? '';
+      } catch (err) {
+        console.warn('[Music] Error restoring Spotify tokens:', err);
+        return '';
       }
-      return stored ?? '';
     },
   });
+
+  const saveTokens = useCallback(async (result: SpotifyTokenResult) => {
+    setSpotifyTokenState(result.accessToken);
+    setRefreshTokenValue(result.refreshToken);
+    setTokenExpiresAt(result.expiresAt);
+    await Promise.all([
+      AsyncStorage.setItem(SPOTIFY_TOKEN_KEY, result.accessToken),
+      AsyncStorage.setItem(SPOTIFY_REFRESH_KEY, result.refreshToken),
+      AsyncStorage.setItem(SPOTIFY_EXPIRES_KEY, result.expiresAt.toString()),
+    ]);
+  }, []);
+
+  const ensureValidToken = useCallback(async (): Promise<string> => {
+    if (!spotifyToken || !refreshTokenValue) return spotifyToken;
+
+    const buffer = 5 * 60 * 1000;
+    if (tokenExpiresAt > 0 && Date.now() > tokenExpiresAt - buffer) {
+      if (refreshingRef.current) return spotifyToken;
+      refreshingRef.current = true;
+      console.log('[Music] Token expiring soon, refreshing...');
+      try {
+        const result = await spotifyRefreshToken(refreshTokenValue);
+        if (result) {
+          await saveTokens(result);
+          console.log('[Music] Token refreshed successfully');
+          refreshingRef.current = false;
+          return result.accessToken;
+        }
+      } catch (err) {
+        console.warn('[Music] Token refresh failed:', err);
+      }
+      refreshingRef.current = false;
+    }
+    return spotifyToken;
+  }, [spotifyToken, refreshTokenValue, tokenExpiresAt, saveTokens]);
 
   const setSpotifyToken = useCallback(async (token: string) => {
     console.log('[Music] Setting Spotify token');
     setSpotifyTokenState(token);
     await AsyncStorage.setItem(SPOTIFY_TOKEN_KEY, token);
+  }, []);
+
+  const connectSpotify = useCallback(async (): Promise<boolean> => {
+    console.log('[Music] Starting Spotify OAuth flow...');
+    setIsConnecting(true);
+    try {
+      const result = await spotifyLogin();
+      if (result) {
+        await saveTokens(result);
+        console.log('[Music] Spotify connected successfully');
+        setIsConnecting(false);
+        return true;
+      }
+      console.log('[Music] Spotify auth was cancelled or failed');
+      setIsConnecting(false);
+      return false;
+    } catch (err) {
+      console.warn('[Music] connectSpotify error:', err);
+      setIsConnecting(false);
+      return false;
+    }
+  }, [saveTokens]);
+
+  const disconnectSpotify = useCallback(async () => {
+    console.log('[Music] Disconnecting Spotify...');
+    setSpotifyTokenState('');
+    setRefreshTokenValue('');
+    setTokenExpiresAt(0);
+    await Promise.all([
+      AsyncStorage.removeItem(SPOTIFY_TOKEN_KEY),
+      AsyncStorage.removeItem(SPOTIFY_REFRESH_KEY),
+      AsyncStorage.removeItem(SPOTIFY_EXPIRES_KEY),
+    ]);
   }, []);
 
   const likedQuery = useQuery({
@@ -101,8 +191,10 @@ export const [MusicProvider, useMusic] = createContextHook(() => {
 
     let tracks: Track[] = [];
 
-    if (spotifyToken && artistId) {
-      tracks = await generateStation(artistId, artistName, spotifyToken);
+    const validToken = await ensureValidToken();
+
+    if (validToken && artistId) {
+      tracks = await generateStation(artistId, artistName, validToken);
     }
 
     if (tracks.length === 0) {
@@ -137,7 +229,7 @@ export const [MusicProvider, useMusic] = createContextHook(() => {
     queryClient.setQueryData(['station-history'], updated);
 
     return true;
-  }, [historyQuery.data, queryClient, spotifyToken]);
+  }, [historyQuery.data, queryClient, ensureValidToken]);
 
   const skipTrack = useCallback(() => {
     if (!station) return;
@@ -163,6 +255,11 @@ export const [MusicProvider, useMusic] = createContextHook(() => {
 
   const staffPicks = STAFF_PICKS;
 
+  const isTokenExpired = useMemo(() => {
+    if (!spotifyToken || tokenExpiresAt === 0) return false;
+    return Date.now() > tokenExpiresAt;
+  }, [spotifyToken, tokenExpiresAt]);
+
   return useMemo(() => ({
     station,
     currentTrack,
@@ -178,10 +275,15 @@ export const [MusicProvider, useMusic] = createContextHook(() => {
     closeStation,
     spotifyToken,
     setSpotifyToken,
+    connectSpotify,
+    disconnectSpotify,
+    isConnecting,
+    isTokenExpired,
   }), [
     station, currentTrack, isStationLoading, likedQuery.data,
     historyQuery.data, staffPicks, startStation, skipTrack,
     feedbackMutation.mutate, likeMutation.mutate, closeStation, isLiked,
-    spotifyToken, setSpotifyToken,
+    spotifyToken, setSpotifyToken, connectSpotify, disconnectSpotify,
+    isConnecting, isTokenExpired,
   ]);
 });

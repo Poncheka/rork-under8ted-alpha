@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Search, Zap, Clock, ChevronRight, Disc3, X, AlertCircle } from 'lucide-react-native';
+import { Search, Zap, Clock, ChevronRight, Disc3, X } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { colors, spacing, radius } from '@/constants/theme';
 import { useAuth } from '@/providers/AuthProvider';
@@ -27,7 +27,7 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { profile } = useAuth();
-  const { staffPicks, recentStations, likedSongs, spotifyToken } = useMusic();
+  const { staffPicks, recentStations, likedSongs, spotifyToken, connectSpotify, isConnecting } = useMusic();
   const [searchText, setSearchText] = useState<string>('');
   const [searchResults, setSearchResults] = useState<SpotifyArtist[]>([]);
   const [isSearching, setIsSearching] = useState<boolean>(false);
@@ -166,12 +166,28 @@ export default function HomeScreen() {
           </View>
 
           {!hasToken && (
-            <View style={styles.tokenBanner}>
-              <AlertCircle size={16} color={colors.acidYellow} />
+            <TouchableOpacity
+              style={styles.tokenBanner}
+              onPress={() => {
+                if (!isConnecting) {
+                  if (Platform.OS !== 'web') {
+                    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  }
+                  void connectSpotify();
+                }
+              }}
+              activeOpacity={0.8}
+              testID="connect-spotify-button"
+            >
+              {isConnecting ? (
+                <ActivityIndicator size="small" color={colors.acidYellow} />
+              ) : (
+                <Zap size={16} color={colors.acidYellow} />
+              )}
               <Text style={styles.tokenBannerText}>
-                Connect Spotify to discover music. Set your token in settings.
+                {isConnecting ? 'Connecting to Spotify...' : 'Tap to connect Spotify and discover music'}
               </Text>
-            </View>
+            </TouchableOpacity>
           )}
 
           <View style={styles.searchContainer}>
